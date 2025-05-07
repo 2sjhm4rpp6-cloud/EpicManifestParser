@@ -65,7 +65,7 @@ public sealed class FFileManifestStream : RandomAccessStream
 	/// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
 	/// <returns>A task that represents the entire save operation.</returns>
 	public async Task SaveToAsync(Stream destination, Action<SaveProgressChangedEventArgs>? progressCallback,
-		object? userState = default, int? maxDegreeOfParallelism = null, CancellationToken cancellationToken = default)
+		object? userState = null, int? maxDegreeOfParallelism = null, CancellationToken cancellationToken = default)
 	{
 		if (destination is MemoryStream {Position: 0} ms)
 		{
@@ -80,7 +80,7 @@ public sealed class FFileManifestStream : RandomAccessStream
 
 		// TODO: make concurrent
 
-		var downloadState = new DownloadState<byte[]>(null!, _fileManifest, Length, userState, progressCallback);
+		var downloadState = new DownloadState<byte[]>(null!, _fileManifest, userState, progressCallback);
 
 		if (_cacheAsIs)
 		{
@@ -143,11 +143,11 @@ public sealed class FFileManifestStream : RandomAccessStream
 	/// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
 	/// <returns>A task that represents the entire save operation.</returns>
 	public async Task SaveBytesAsync(byte[] destination, Action<SaveProgressChangedEventArgs>? progressCallback,
-		object? userState = default, int? maxDegreeOfParallelism = null, CancellationToken cancellationToken = default)
+		object? userState = null, int? maxDegreeOfParallelism = null, CancellationToken cancellationToken = default)
 	{
 		ArgumentOutOfRangeException.ThrowIfLessThan(destination.Length, Length);
 
-		var downloadState = new DownloadState<byte[]>(destination, _fileManifest, Length, userState, progressCallback);
+		var downloadState = new DownloadState<byte[]>(destination, _fileManifest, userState, progressCallback);
 		var parallelOptions = new ParallelOptions
 		{
 			MaxDegreeOfParallelism = maxDegreeOfParallelism ?? Environment.ProcessorCount,
@@ -206,7 +206,7 @@ public sealed class FFileManifestStream : RandomAccessStream
 	/// <param name="maxDegreeOfParallelism">The maximum number of concurrent tasks saving/downloading to the destination. (optional)</param>
 	/// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
 	/// <returns>A task that represents the entire save operation.</returns>
-	public async Task<byte[]> SaveBytesAsync(Action<SaveProgressChangedEventArgs> progressCallback, object? userState = default,
+	public async Task<byte[]> SaveBytesAsync(Action<SaveProgressChangedEventArgs> progressCallback, object? userState = null,
 		int? maxDegreeOfParallelism = null, CancellationToken cancellationToken = default)
 	{
 		var destination = new byte[Length];
@@ -240,7 +240,7 @@ public sealed class FFileManifestStream : RandomAccessStream
 		int? maxDegreeOfParallelism = null, CancellationToken cancellationToken = default)
 	{
 		using var destination = File.OpenHandle(path, FileMode.Create, FileAccess.ReadWrite, FileShare.None, FileOptions.Asynchronous, Length);
-		var downloadState = new DownloadState<SafeFileHandle>(destination, _fileManifest, Length, userState, progressCallback);
+		var downloadState = new DownloadState<SafeFileHandle>(destination, _fileManifest, userState, progressCallback);
 
 		var parallelOptions = new ParallelOptions
 		{
@@ -454,41 +454,6 @@ public sealed class FFileManifestStream : RandomAccessStream
 		return (int)bytesRead;
 	}
 
-	private long _lastChunkPartPosition;
-	private uint _lastChunkPartSize;
-	private int _lastChunkPartIndex;
-
-	private (int Index, uint ChunkPos) GetChunkIndexNew(long position)
-	{
-		lock (_fileManifest)
-		{
-			var maxPosition = _lastChunkPartPosition + _lastChunkPartSize;
-			if (maxPosition < position && position >= _lastChunkPartPosition)
-			{
-				return (_lastChunkPartIndex, (uint)(_lastChunkPartPosition - position));
-			}
-
-			var chunkPartPosition = 0L;
-
-			for (var i = 0; i < _fileManifest.ChunkPartsArray.Length; i++)
-			{
-				var chunkPart = _fileManifest.ChunkPartsArray[i];
-
-				if (chunkPartPosition >= position)
-				{
-					_lastChunkPartPosition = chunkPartPosition;
-					_lastChunkPartSize = chunkPart.Size;
-					_lastChunkPartIndex = i;
-					return (i, (uint)(chunkPartPosition - position));
-				}
-
-				chunkPartPosition += chunkPart.Size;
-			}
-
-			return (-1, 0);
-		}
-	}
-
 	private (int Index, uint ChunkPos) GetChunkIndex(long position)
 	{
 		for (var i = 0; i < _fileManifest.ChunkPartsArray.Length; i++)
@@ -573,7 +538,7 @@ internal sealed class DownloadState<TDestination> : IEnumerable<ChunkWithOffset<
 	private long _lastSize;
 	private int _chunkpartIndex;
 
-	public DownloadState(TDestination destination, FFileManifest fileManifest, long totalBytesToSave, object? userState, Action<SaveProgressChangedEventArgs>? callback)
+	public DownloadState(TDestination destination, FFileManifest fileManifest, object? userState, Action<SaveProgressChangedEventArgs>? callback)
 	{
 		Reset();
 		Destination = destination;
@@ -583,7 +548,7 @@ internal sealed class DownloadState<TDestination> : IEnumerable<ChunkWithOffset<
 		_lock = new LockObject();
 		_userState = userState;
 		_callback = callback;
-		_totalBytesToSave = totalBytesToSave;
+		_totalBytesToSave = fileManifest.FileSize;
 	}
 
 	public void OnBytesWritten(long amount)
