@@ -18,32 +18,30 @@ public readonly struct FChunkPart
 	/// </summary>
 	public uint32 Size { get; }
 
-	internal FChunkPart(FGuid guid, uint32 offset, uint32 size)
+	/// <summary>
+	/// The offset of the first byte into the file.
+	/// </summary>
+	public int64 FileOffset { get; }
+
+	internal FChunkPart(FGuid guid, uint32 offset, uint32 size, int64 fileOffset)
 	{
 		Guid = guid;
 		Offset = offset;
 		Size = size;
+		FileOffset = fileOffset;
 	}
 
-	internal FChunkPart(ref ManifestReader reader)
+	internal FChunkPart(ref ManifestReader reader, int64 fileOffset)
 	{
+		FileOffset = fileOffset;
 		var startPos = reader.Position;
 		var dataSize = reader.Read<int32>();
 
 		Guid = reader.Read<FGuid>();
 		Offset = reader.Read<uint32>();
 		Size = reader.Read<uint32>();
+		FileOffset = fileOffset;
 
 		reader.Position = startPos + dataSize;
 	}
-
-#if NET9_0_OR_GREATER
-	internal static FChunkPart Read(ref ManifestReader reader) => new(ref reader);
-#else
-	internal static FChunkPart Read(GenericReader.IGenericReader genericReader)
-	{
-		var reader = (ManifestReader)genericReader;
-		return new FChunkPart(ref reader);
-	}
-#endif
 }

@@ -70,7 +70,25 @@ public sealed class FFileManifest : IComparable<FFileManifest>, IComparable
 			for (var i = 0; i < elementCount; i++)
 				filesSpan[i].InstallTags = reader.ReadFStringArray();
 			for (var i = 0; i < elementCount; i++)
-				filesSpan[i].ChunkPartsArray = reader.ReadArray(FChunkPart.Read);
+			{
+				var length = reader.Read<int32>();
+				if (length == 0)
+				{
+					filesSpan[i].ChunkPartsArray = [];
+					continue;
+				}
+
+				var chunkPartsArray = filesSpan[i].ChunkPartsArray = new FChunkPart[length];
+				var chunkPartsSpan = chunkPartsArray.AsSpan();
+				var fileOffset = 0L;
+
+				for (var p = 0; p < length; p++)
+				{
+					var chunkPart = new FChunkPart(ref reader, fileOffset);
+					chunkPartsSpan[p] = chunkPart;
+					fileOffset += chunkPart.Size;
+				}
+			}
 
 			// not to be found in UE, maybe fn specific?
 			if (dataVersion >= (EFileManifestListVersion)2)

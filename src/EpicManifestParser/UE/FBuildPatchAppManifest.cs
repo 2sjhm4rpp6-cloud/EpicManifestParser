@@ -211,13 +211,15 @@ public class FBuildPatchAppManifest
 			var jsonFileChunkParts = jsonFileManifest["FileChunkParts"]!.AsArray();
 			fileManifest.ChunkPartsArray = new FChunkPart[jsonFileChunkParts.Count];
 			var chunkPartsSpan = fileManifest.ChunkPartsArray.AsSpan();
+			var chunkPartsFileOffset = 0L;
 			for (var j = 0; j < chunkPartsSpan.Length; j++)
 			{
 				var jsonFileChunkPart = jsonFileChunkParts[j]!;
 				var chunkPartGuid = jsonFileChunkPart["Guid"].GetFGuid();
 				var chunkPartOffset = jsonFileChunkPart["Offset"].GetBlob<uint32>();
 				var chunkPartSize = jsonFileChunkPart["Size"].GetBlob<uint32>();
-				chunkPartsSpan[j] = new FChunkPart(chunkPartGuid, chunkPartOffset, chunkPartSize);
+				chunkPartsSpan[j] = new FChunkPart(chunkPartGuid, chunkPartOffset, chunkPartSize, chunkPartsFileOffset);
+				chunkPartsFileOffset += chunkPartSize;
 
 				ref var lookupChunk = ref CollectionsMarshal.GetValueRefOrAddDefault(mutableChunkInfoLookup, chunkPartGuid, out var exists);
 				if (!exists)
