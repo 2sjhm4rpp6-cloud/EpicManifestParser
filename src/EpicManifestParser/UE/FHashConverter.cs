@@ -9,49 +9,49 @@ namespace EpicManifestParser.UE;
 /// Converts a <see cref="IFHash{T}"/> value from and to JSON.
 /// </summary>
 public sealed class FHashConverter<T> : JsonConverter<T>
-	where T : struct, IFHash<T>, IEquatable<T>, ISpanFormattable, IUtf8SpanFormattable
+    where T : struct, IFHash<T>, IEquatable<T>, ISpanFormattable, IUtf8SpanFormattable
 {
-	/// <inheritdoc/>
-	public override T Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-	{
-		if (reader.TokenType != JsonTokenType.String)
-			throw new JsonException($"Expected string, got {reader.TokenType}.");
+    /// <inheritdoc/>
+    public override T Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType != JsonTokenType.String)
+            throw new JsonException($"Expected string, got {reader.TokenType}.");
 
-		Span<byte> utf8Hex = stackalloc byte[T.Size * 2];
+        Span<byte> utf8Hex = stackalloc byte[T.Size * 2];
 
-		var hexLength = reader.CopyString(utf8Hex);
-		if (hexLength != utf8Hex.Length)
-			throw new JsonException($"Expected {utf8Hex.Length} hex characters.");
+        int hexLength = reader.CopyString(utf8Hex);
+        if (hexLength != utf8Hex.Length)
+            throw new JsonException($"Expected {utf8Hex.Length} hex characters.");
 
-		T result = default;
+        T result = default;
 
-		var status = Convert.FromHexString(
-			utf8Hex[..hexLength],
-			result.GetSpan(),
-			out var bytesConsumed,
-			out var bytesWritten);
+        OperationStatus status = Convert.FromHexString(
+            utf8Hex[..hexLength],
+            result.GetSpan(),
+            out int bytesConsumed,
+            out int bytesWritten);
 
-		if (status != OperationStatus.Done ||
-		    bytesConsumed != hexLength ||
-		    bytesWritten != T.Size)
-		{
-			throw new JsonException("Invalid hash hex value.");
-		}
+        if (status != OperationStatus.Done ||
+            bytesConsumed != hexLength ||
+            bytesWritten != T.Size)
+        {
+            throw new JsonException("Invalid hash hex value.");
+        }
 
-		return result;
-	}
+        return result;
+    }
 
-	/// <inheritdoc/>
-	public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
-	{
-		Span<byte> utf8Hex = stackalloc byte[T.Size * 2];
+    /// <inheritdoc/>
+    public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
+    {
+        Span<byte> utf8Hex = stackalloc byte[T.Size * 2];
 
-		if (!(value as IUtf8SpanFormattable).TryFormat(utf8Hex, out var bytesWritten, default, null) ||
-		    bytesWritten != utf8Hex.Length)
-		{
-			throw new JsonException("Failed to format SHA hash.");
-		}
+        if (!(value as IUtf8SpanFormattable).TryFormat(utf8Hex, out int bytesWritten, default, null) ||
+            bytesWritten != utf8Hex.Length)
+        {
+            throw new JsonException("Failed to format SHA hash.");
+        }
 
-		writer.WriteStringValue(utf8Hex);
-	}
+        writer.WriteStringValue(utf8Hex);
+    }
 }

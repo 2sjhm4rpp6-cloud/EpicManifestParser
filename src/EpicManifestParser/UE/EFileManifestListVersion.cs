@@ -4,11 +4,11 @@
 
 internal enum EFileManifestListVersion : uint8
 {
-	Original = 0,
-	HasMD5AndMIMEType,
-	HasSHA256,
+    Original = 0,
+    HasMD5AndMIMEType,
+    HasSHA256,
 
-	// Always after the latest version, signifies the latest version plus 1 to allow initialization simplicity.
-	LatestPlusOne,
-	Latest = (LatestPlusOne - 1)
+    // Always after the latest version, signifies the latest version plus 1 to allow initialization simplicity.
+    LatestPlusOne,
+    Latest = (LatestPlusOne - 1)
 }
