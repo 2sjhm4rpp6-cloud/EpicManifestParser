@@ -1,8 +1,6 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 
-using EpicManifestParser.UE;
-
 namespace EpicManifestParser.Json;
 
 internal static class JsonNodeExtensions
@@ -12,7 +10,7 @@ internal static class JsonNodeExtensions
 		Converters =
 		{
 			new FGuidConverter(),
-			new FSHAHashConverter(),
+			new FHashConverter<FSHAHash>(),
 			new BlobStringConverter<uint8>(),
 			new BlobStringConverter<int32>(),
 			new BlobStringConverter<uint32>(),
@@ -23,33 +21,36 @@ internal static class JsonNodeExtensions
 		}
 	};
 
-	public static T GetBlob<T>(this JsonNode? node, T defaultValue = default) where T : struct
+	extension(JsonNode? node)
 	{
-		return node.Deserialize<BlobString<T>?>(SerializerOptions)?.Value ?? defaultValue;
-	}
+		public T GetBlob<T>(T defaultValue = default) where T : struct
+		{
+			return node.Deserialize<BlobString<T>?>(SerializerOptions)?.Value ?? defaultValue;
+		}
 
-	public static FGuid GetFGuid(this JsonNode? node)
-	{
-		return node.Deserialize<FGuid>(SerializerOptions);
-	}
+		public FGuid GetFGuid()
+		{
+			return node.Deserialize<FGuid>(SerializerOptions);
+		}
 
-	public static FSHAHash GetSha(this JsonNode? node)
-	{
-		return node.Deserialize<FSHAHash>(SerializerOptions);
-	}
+		public FSHAHash GetSha()
+		{
+			return node.Deserialize<FSHAHash>(SerializerOptions);
+		}
 
-	public static string GetString(this JsonNode? node, string defaultValue = "")
-	{
-		return node?.GetValue<string>() ?? defaultValue;
-	}
+		public string GetString(string defaultValue = "")
+		{
+			return node?.GetValue<string>() ?? defaultValue;
+		}
 
-	public static T Get<T>(this JsonNode? node, T defaultValue = default!)
-	{
-		return node is null ? defaultValue : node.GetValue<T>();
-	}
+		public T Get<T>(T defaultValue = default!)
+		{
+			return node is null ? defaultValue : node.GetValue<T>();
+		}
 
-	public static T Parse<T>(this JsonNode? node, T defaultValue = default!)
-	{
-		return node is null ? defaultValue : node.Deserialize<T>() ?? defaultValue;
+		public T Parse<T>(T defaultValue = default!)
+		{
+			return node is null ? defaultValue : node.Deserialize<T>() ?? defaultValue;
+		}
 	}
 }

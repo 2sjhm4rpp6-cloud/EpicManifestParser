@@ -88,13 +88,12 @@ public sealed class FFileManifestStream : RandomAccessStream
 
 			try
 			{
-				foreach (var fileChunkPart in _fileManifest.ChunkPartsArray)
+				foreach (var chunkPart in _fileManifest.ChunkPartsArray)
 				{
-					var chunk = _fileManifest.Manifest.Chunks[fileChunkPart.Guid];
-					await chunk.ReadDataAsIsAsync(poolBuffer, _fileManifest.Manifest, cancellationToken).ConfigureAwait(false);
-					await destination.WriteAsync(new ReadOnlyMemory<byte>(poolBuffer, (int)fileChunkPart.Offset, (int)fileChunkPart.Size),
+					await chunkPart.Chunk.ReadDataAsIsAsync(poolBuffer, _fileManifest.Manifest, cancellationToken).ConfigureAwait(false);
+					await destination.WriteAsync(new ReadOnlyMemory<byte>(poolBuffer, (int)chunkPart.Offset, (int)chunkPart.Size),
 						cancellationToken).ConfigureAwait(false);
-					downloadState.OnBytesWritten(fileChunkPart.Size);
+					downloadState.OnBytesWritten(chunkPart.Size);
 				}
 			}
 			finally
@@ -108,14 +107,13 @@ public sealed class FFileManifestStream : RandomAccessStream
 
 			try
 			{
-				foreach (var fileChunkPart in _fileManifest.ChunkPartsArray)
+				foreach (var chunkPart in _fileManifest.ChunkPartsArray)
 				{
-					var chunk = _fileManifest.Manifest.Chunks[fileChunkPart.Guid];
-					await chunk.ReadDataAsync(poolBuffer, 0, (int)fileChunkPart.Size,
-						(int)fileChunkPart.Offset, _fileManifest.Manifest, cancellationToken).ConfigureAwait(false);
-					await destination.WriteAsync(new ReadOnlyMemory<byte>(poolBuffer, 0, (int)fileChunkPart.Size),
+					await chunkPart.Chunk.ReadDataAsync(poolBuffer, 0, (int)chunkPart.Size,
+						(int)chunkPart.Offset, _fileManifest.Manifest, cancellationToken).ConfigureAwait(false);
+					await destination.WriteAsync(new ReadOnlyMemory<byte>(poolBuffer, 0, (int)chunkPart.Size),
 						cancellationToken).ConfigureAwait(false);
-					downloadState.OnBytesWritten(fileChunkPart.Size);
+					downloadState.OnBytesWritten(chunkPart.Size);
 				}
 			}
 			finally
@@ -253,7 +251,6 @@ public sealed class FFileManifestStream : RandomAccessStream
 		else
 			await Parallel.ForEachAsync(downloadState, parallelOptions, SaveAsync).ConfigureAwait(false);
 
-		RandomAccess.FlushToDisk(destination);
 		return;
 
 		static async ValueTask SaveAsync(ChunkWithOffset<SafeFileHandle> tuple, CancellationToken token)
@@ -383,8 +380,7 @@ public sealed class FFileManifestStream : RandomAccessStream
 	/// <returns>The total number of bytes written into the <paramref name="buffer"/>.</returns>
 	public override async Task<int> ReadAtAsync(long position, byte[] buffer, int offset, int count, CancellationToken cancellationToken = default)
 	{
-		var (i, startPos) = GetChunkIndex(position);
-		if (i == -1)
+		if (!_fileManifest.TryFindChunkPart(position, out var chunkPartIndex, out var chunkPartOffset))
 			return 0;
 
 		var bytesRead = 0u;
@@ -395,15 +391,14 @@ public sealed class FFileManifestStream : RandomAccessStream
 
 			try
 			{
-				while (i < _fileManifest.ChunkPartsArray.Length)
+				while (chunkPartIndex < _fileManifest.ChunkPartsArray.Length)
 				{
-					var chunkPart = _fileManifest.ChunkPartsArray[i];
-					var chunk = _fileManifest.Manifest.Chunks[chunkPart.Guid];
+					var chunkPart = _fileManifest.ChunkPartsArray[chunkPartIndex];
 
-					await chunk.ReadDataAsIsAsync(poolBuffer, _fileManifest.Manifest, cancellationToken).ConfigureAwait(false);
+					await chunkPart.Chunk.ReadDataAsIsAsync(poolBuffer, _fileManifest.Manifest, cancellationToken).ConfigureAwait(false);
 
-					var chunkOffset = chunkPart.Offset + startPos;
-					var chunkBytes = chunkPart.Size - startPos;
+					var chunkOffset = chunkPart.Offset + chunkPartOffset;
+					var chunkBytes = chunkPart.Size - chunkPartOffset;
 					var bytesLeft = (uint)count - bytesRead;
 
 					if (bytesLeft <= chunkBytes)
@@ -415,9 +410,9 @@ public sealed class FFileManifestStream : RandomAccessStream
 
 					Unsafe.CopyBlockUnaligned(ref buffer[bytesRead + offset], ref poolBuffer[chunkOffset], chunkBytes);
 					bytesRead += chunkBytes;
-					startPos = 0;
+					chunkPartOffset = 0;
 
-					++i;
+					++chunkPartIndex;
 				}
 			}
 			finally
@@ -427,46 +422,30 @@ public sealed class FFileManifestStream : RandomAccessStream
 		}
 		else
 		{
-			while (i < _fileManifest.ChunkPartsArray.Length)
+			while (chunkPartIndex < _fileManifest.ChunkPartsArray.Length)
 			{
-				var chunkPart = _fileManifest.ChunkPartsArray[i];
-				var chunk = _fileManifest.Manifest.Chunks[chunkPart.Guid];
+				var chunkPart = _fileManifest.ChunkPartsArray[chunkPartIndex];
 
-				var chunkOffset = (int)(chunkPart.Offset + startPos);
-				var chunkBytes = (int)(chunkPart.Size - startPos);
+				var chunkOffset = (int)(chunkPart.Offset + chunkPartOffset);
+				var chunkBytes = (int)(chunkPart.Size - chunkPartOffset);
 				var bytesLeft = count - (int)bytesRead;
 
 				if (bytesLeft <= chunkBytes)
 				{
-					await chunk.ReadDataAsync(buffer, (int)bytesRead + offset, bytesLeft, chunkOffset, _fileManifest.Manifest, cancellationToken).ConfigureAwait(false);
+					await chunkPart.Chunk.ReadDataAsync(buffer, (int)bytesRead + offset, bytesLeft, chunkOffset, _fileManifest.Manifest, cancellationToken).ConfigureAwait(false);
 					bytesRead += (uint)bytesLeft;
 					break;
 				}
 
-				await chunk.ReadDataAsync(buffer, (int)bytesRead + offset, chunkBytes, chunkOffset, _fileManifest.Manifest, cancellationToken).ConfigureAwait(false);
+				await chunkPart.Chunk.ReadDataAsync(buffer, (int)bytesRead + offset, chunkBytes, chunkOffset, _fileManifest.Manifest, cancellationToken).ConfigureAwait(false);
 				bytesRead += (uint)chunkBytes;
-				startPos = 0;
+				chunkPartOffset = 0;
 
-				++i;
+				++chunkPartIndex;
 			}
 		}
 
 		return (int)bytesRead;
-	}
-
-	private (int Index, uint ChunkPos) GetChunkIndex(long position)
-	{
-		for (var i = 0; i < _fileManifest.ChunkPartsArray.Length; i++)
-		{
-			var chunkPart = _fileManifest.ChunkPartsArray[i];
-
-			if (position < chunkPart.Size)
-				return (i, (uint)position);
-
-			position -= chunkPart.Size;
-		}
-
-		return (-1, 0);
 	}
 
 	/// <summary>Sets the position within the current stream to the specified value.</summary>
@@ -479,7 +458,7 @@ public sealed class FFileManifestStream : RandomAccessStream
 		Position = loc switch
 		{
 			SeekOrigin.Begin => offset,
-			SeekOrigin.Current => offset + _position,
+			SeekOrigin.Current => _position + offset,
 			SeekOrigin.End => Length + offset,
 			_ => throw new ArgumentException("Invalid loc", nameof(loc))
 		};
@@ -497,28 +476,54 @@ public sealed class FFileManifestStream : RandomAccessStream
 		=> throw new NotSupportedException();
 }
 
+
 /// <summary>
-/// Event for save progress
+/// Provides data for the save progress changed event.
 /// </summary>
 public sealed class SaveProgressChangedEventArgs : EventArgs
 {
-	internal SaveProgressChangedEventArgs(object? userState, long bytesSaved, long totalBytesToSave, int progressPercentage)
+	/// <summary>
+	/// Gets an optional user-defined object that qualifies or contains
+	/// information about the save operation.
+	/// </summary>
+	public object? UserState { get; }
+
+	/// <summary>
+	/// Gets the number of bytes written during this specific event.
+	/// </summary>
+	public long BytesWritten { get; }
+
+	/// <summary>
+	/// Gets the cumulative number of bytes written so far.
+	/// </summary>
+	public long TotalBytesWritten { get; }
+
+	/// <summary>
+	/// Gets the total number of bytes that will be written.
+	/// </summary>
+	public long TotalBytesToWrite { get; }
+
+	/// <summary>
+	/// Gets the progress of the save operation as a percentage (0–100),
+	/// calculated from <see cref="TotalBytesWritten"/> and <see cref="TotalBytesToWrite"/>.
+	/// </summary>
+	public int ProgressPercentage { get; }
+
+	internal SaveProgressChangedEventArgs(
+		object? userState,
+		long bytesWritten,
+		long totalBytesWritten,
+		long totalBytesToWrite,
+		int progressPercentage)
 	{
 		UserState = userState;
-		BytesSaved = bytesSaved;
-		TotalBytesToSave = totalBytesToSave;
+		BytesWritten = bytesWritten;
+		TotalBytesWritten = totalBytesWritten;
+		TotalBytesToWrite = totalBytesToWrite;
 		ProgressPercentage = progressPercentage;
 	}
-
-	/// <summary/>
-	public object? UserState { get; }
-	/// <summary/>
-	public long BytesSaved { get; }
-	/// <summary/>
-	public long TotalBytesToSave { get; }
-	/// <summary/>
-	public int ProgressPercentage { get; }
 }
+
 
 internal sealed class DownloadState<TDestination> : IEnumerable<ChunkWithOffset<TDestination>>, IEnumerator<ChunkWithOffset<TDestination>>
 	where TDestination : class
@@ -526,7 +531,7 @@ internal sealed class DownloadState<TDestination> : IEnumerable<ChunkWithOffset<
 	public readonly TDestination Destination;
 	public readonly FFileManifest FileManifest;
 
-	private readonly LockObject? _lock;
+	private readonly Lock? _lock;
 	private readonly object? _userState;
 	private readonly Action<SaveProgressChangedEventArgs>? _callback;
 	private readonly long _totalBytesToSave;
@@ -535,7 +540,6 @@ internal sealed class DownloadState<TDestination> : IEnumerable<ChunkWithOffset<
 
 	// IEnumerable & IEnumerator
 	private long _offset;
-	private long _lastSize;
 	private int _chunkpartIndex;
 
 	public DownloadState(TDestination destination, FFileManifest fileManifest, object? userState, Action<SaveProgressChangedEventArgs>? callback)
@@ -544,8 +548,9 @@ internal sealed class DownloadState<TDestination> : IEnumerable<ChunkWithOffset<
 		Destination = destination;
 		FileManifest = fileManifest;
 
-		if (callback is null) return;
-		_lock = new LockObject();
+		if (callback is null)
+			return;
+		_lock = new Lock();
 		_userState = userState;
 		_callback = callback;
 		_totalBytesToSave = fileManifest.FileSize;
@@ -560,12 +565,11 @@ internal sealed class DownloadState<TDestination> : IEnumerable<ChunkWithOffset<
 		{
 			_bytesSaved += amount;
 			var progress = (int)MathF.Truncate((float)_bytesSaved / _totalBytesToSave * 100f);
-			if (progress != _lastProgress)
-			{
-				_lastProgress = progress;
-				var eventArgs = new SaveProgressChangedEventArgs(_userState, _bytesSaved, _totalBytesToSave, progress);
-				_callback(eventArgs);
-			}
+			if (progress == _lastProgress)
+				return;
+			_lastProgress = progress;
+			var eventArgs = new SaveProgressChangedEventArgs(_userState, amount, _bytesSaved, _totalBytesToSave, progress);
+			_callback(eventArgs);
 		}
 	}
 
@@ -582,16 +586,14 @@ internal sealed class DownloadState<TDestination> : IEnumerable<ChunkWithOffset<
 		if (_chunkpartIndex >= FileManifest.ChunkPartsArray.Length)
 			return false;
 
-		_offset += _lastSize;
 		var chunkPart = FileManifest.ChunkPartsArray[_chunkpartIndex];
-		_lastSize = chunkPart.Size;
+		_offset = chunkPart.FileOffset;
 		return true;
 	}
 
 	public void Reset()
 	{
 		_offset = 0;
-		_lastSize = 0;
 		_chunkpartIndex = -1;
 	}
 
@@ -600,8 +602,7 @@ internal sealed class DownloadState<TDestination> : IEnumerable<ChunkWithOffset<
 		get
 		{
 			var chunkPart = FileManifest.ChunkPartsArray[_chunkpartIndex];
-			var chunk = FileManifest.Manifest.Chunks[chunkPart.Guid];
-			return new ChunkWithOffset<TDestination>(this, chunk, chunkPart.Offset, chunkPart.Size, _offset);
+			return new ChunkWithOffset<TDestination>(this, chunkPart.Chunk, chunkPart.Offset, chunkPart.Size, _offset);
 		}
 	}
 

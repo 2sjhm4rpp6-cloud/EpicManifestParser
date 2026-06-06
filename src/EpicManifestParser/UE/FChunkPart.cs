@@ -1,14 +1,22 @@
-﻿namespace EpicManifestParser.UE;
+﻿using System.Runtime.InteropServices;
+
+namespace EpicManifestParser.UE;
 
 /// <summary>
 /// UE FChunkPart struct
 /// </summary>
 public readonly struct FChunkPart
 {
+	/*
 	/// <summary>
 	/// The GUID of the chunk containing this part.
 	/// </summary>
 	public FGuid Guid { get; }
+	*/
+	/// <summary>
+	/// The chunk containing this part.
+	/// </summary>
+	public FChunkInfo Chunk { get; }
 	/// <summary>
 	/// The offset of the first byte into the chunk.
 	/// </summary>
@@ -23,21 +31,30 @@ public readonly struct FChunkPart
 	/// </summary>
 	public int64 FileOffset { get; }
 
-	internal FChunkPart(FGuid guid, uint32 offset, uint32 size, int64 fileOffset)
+	internal FChunkPart(FGuid guid, uint32 offset, uint32 size, int64 fileOffset, Dictionary<FGuid, FChunkInfo> chunks)
 	{
-		Guid = guid;
+		ref var lookupChunk = ref CollectionsMarshal.GetValueRefOrAddDefault(chunks, guid, out var exists);
+		if (!exists)
+		{
+			lookupChunk = new FChunkInfo
+			{
+				Guid = guid
+			};
+		}
+
+		Chunk = lookupChunk!;
 		Offset = offset;
 		Size = size;
 		FileOffset = fileOffset;
 	}
 
-	internal FChunkPart(ref ManifestReader reader, int64 fileOffset)
+	internal FChunkPart(ref ManifestReader reader, int64 fileOffset, IReadOnlyDictionary<FGuid, FChunkInfo> chunks)
 	{
-		FileOffset = fileOffset;
 		var startPos = reader.Position;
 		var dataSize = reader.Read<int32>();
 
-		Guid = reader.Read<FGuid>();
+		var guid = reader.Read<FGuid>();
+		Chunk = chunks[guid];
 		Offset = reader.Read<uint32>();
 		Size = reader.Read<uint32>();
 		FileOffset = fileOffset;

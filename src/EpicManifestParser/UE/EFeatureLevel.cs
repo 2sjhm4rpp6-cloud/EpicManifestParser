@@ -1,5 +1,7 @@
 ﻿namespace EpicManifestParser.UE;
 
+// https://github.com/NotOfficer/UnrealEngine/blob/1436d646b9b11ffe9a46b04e9617dba689b56d35/Engine/Source/Runtime/Online/BuildPatchServices/Public/BuildPatchFeatureLevel.h?plain=1#L8C1-L11C34
+
 /// <summary>
 /// UE EFeatureLevel enum
 /// </summary>
@@ -81,24 +83,37 @@ public enum EFeatureLevel
 	/// Manifest uses a build id generated unique at build time, and stored in manifest.
 	/// </summary>
 	UsesBuildTimeGeneratedBuildId,
-
 	/// <summary>
-	/// Undocumented in UE
+	/// Manifests generated with this feature level onwards will store the MD5 hash and the calculated MIME type of each file.
 	/// </summary>
-	Unknown1,
+	StoresFileMD5HashesAndMIMEType,
 	/// <summary>
-	/// Undocumented in UE
+	/// Manifests generated with this feature level onwards will store the SHA256 hash of each file.
 	/// </summary>
-	Unknown2,
+	StoresFileSHA256Hashes,
 	/// <summary>
-	/// Used for fortnite currently
+	/// Added support for Uninstall Actions.
 	/// </summary>
-	Unknown3,
+	StoresUninstallActions,
+	/// <summary>
+	/// Added full support for chunk encryption, additionally stores encyption secrets, as well as the CompressedDataSize and AuthTag
+	/// for each chunk. Chunks from here onwards are stored in ChunksV5.
+	/// </summary>
+	ChunkEncryptionSupport,
+	/// <summary>
+	/// Added the secretID as part of the chunk pathing within a CloudDir
+	/// </summary>
+	ChunksStoredBySecret,
+	/// <summary>
+	/// Completed full support for BPS data encryption, if a manifest got encrypted, it will additionally store encryption data
+	/// and most fields will have been replaced by empty or functional but not accurate data.
+	/// </summary>
+	ManifestEncryptionSupport,
 
 	/// <summary>
 	/// !! Always after the latest version entry, signifies the latest version plus 1 to allow the following Latest alias.
 	/// </summary>
-	LatestPlusOne = (UsesBuildTimeGeneratedBuildId + 1),
+	LatestPlusOne,
 	/// <summary>
 	/// An alias for the actual latest version value.
 	/// </summary>
@@ -111,6 +126,14 @@ public enum EFeatureLevel
 	/// An alias to provide the latest version of a manifest supported by a json serialized format.
 	/// </summary>
 	LatestJson = StoresPrerequisiteIds,
+	/// <summary>
+	/// An alias to provide the latest version of a manifest supported by generation runs on platforms without OpenSSL module support.
+	/// </summary>
+	LatestNoOpenSSL = StoresFileMD5HashesAndMIMEType,
+	/// <summary>
+	/// An alias to provide the latest version of a manifest with unencrypted chunks.
+	/// </summary>
+	LatestUnencryptedChunks = StoresUninstallActions,
 	/// <summary>
 	/// An alias to provide the first available version of optimised delta manifest saving.
 	/// </summary>

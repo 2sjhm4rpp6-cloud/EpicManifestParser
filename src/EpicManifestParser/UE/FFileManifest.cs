@@ -1,5 +1,6 @@
 ﻿namespace EpicManifestParser.UE;
 
+// https://github.com/NotOfficer/UnrealEngine/blob/1436d646b9b11ffe9a46b04e9617dba689b56d35/Engine/Source/Runtime/Online/BuildPatchServices/Private/Data/ManifestData.h?plain=1#L155C22-L155C22
 /// <summary>
 /// UE FFileManifest struct
 /// </summary>
@@ -7,16 +8,26 @@ public sealed class FFileManifest : IComparable<FFileManifest>, IComparable
 {
 	/// <summary>
 	/// The build relative filename.
+	/// Can be an obfuscated string for encrypted manifests.
 	/// </summary>
 	public string FileName { get; internal set; } = "";
 	/// <summary>
 	/// Whether this is a symlink to another file.
+	/// Can be an obfuscated string for encrypted manifests.
 	/// </summary>
 	public string SymlinkTarget { get; internal set; } = "";
 	/// <summary>
 	/// The file SHA1.
 	/// </summary>
-	public FSHAHash FileHash { get; internal set; }
+	public FSHAHash SHA1Hash { get; internal set; }
+	/// <summary>
+	/// The file MD5.
+	/// </summary>
+	public FMD5Hash? MD5Hash { get; internal set; }
+	/// <summary>
+	/// The file SHA256.
+	/// </summary>
+	public FSHA256Hash? SHA256Hash { get; internal set; }
 	/// <summary>
 	/// The flags for this file.
 	/// </summary>
@@ -35,14 +46,15 @@ public sealed class FFileManifest : IComparable<FFileManifest>, IComparable
 	/// </summary>
 	public int64 FileSize { get; internal set; }
 	/// <summary>
-	/// The mime type.
+	/// The calculated MIME type for the file.
 	/// </summary>
-	public string MimeType { get; internal set; } = "";
+	public string MIMEType { get; internal set; } = "";
 
 	internal FBuildPatchAppManifest Manifest { get; set; } = null!;
 
 	internal FFileManifest() { }
 
+	// https://github.com/NotOfficer/UnrealEngine/blob/1436d646b9b11ffe9a46b04e9617dba689b56d35/Engine/Source/Runtime/Online/BuildPatchServices/Private/Data/ManifestData.cpp?plain=1#L677C69-L677C69
 	internal static FFileManifest[] ReadFileDataList(ref ManifestReader reader, FBuildPatchAppManifest manifest)
 	{
 		var startPos = reader.Position;
@@ -64,7 +76,7 @@ public sealed class FFileManifest : IComparable<FFileManifest>, IComparable
 			for (var i = 0; i < elementCount; i++)
 				filesSpan[i].SymlinkTarget = reader.ReadFString();
 			for (var i = 0; i < elementCount; i++)
-				filesSpan[i].FileHash = reader.Read<FSHAHash>();
+				filesSpan[i].SHA1Hash = reader.Read<FSHAHash>();
 			for (var i = 0; i < elementCount; i++)
 				filesSpan[i].FileMetaFlags = reader.Read<EFileMetaFlags>();
 			for (var i = 0; i < elementCount; i++)
@@ -84,24 +96,30 @@ public sealed class FFileManifest : IComparable<FFileManifest>, IComparable
 
 				for (var p = 0; p < length; p++)
 				{
-					var chunkPart = new FChunkPart(ref reader, fileOffset);
+					var chunkPart = new FChunkPart(ref reader, fileOffset, manifest.Chunks);
 					chunkPartsSpan[p] = chunkPart;
 					fileOffset += chunkPart.Size;
 				}
 			}
 
-			// not to be found in UE, maybe fn specific?
-			if (dataVersion >= (EFileManifestListVersion)2)
+			if (dataVersion >= EFileManifestListVersion.HasMD5AndMIMEType)
 			{
-				for (var i = 0; i < elementCount; i++) // TArray<Unknown>
+				for (var i = 0; i < elementCount; i++)
 				{
-					var a = reader.Read<int32>();
-					reader.Position += a * 16;
+					var bIsValid = reader.Read<int32>() == 1; // FMD5Hash
+					if (bIsValid)
+					{
+						filesSpan[i].MD5Hash = reader.Read<FMD5Hash>();
+					}
 				}
 				for (var i = 0; i < elementCount; i++)
-					filesSpan[i]!.MimeType = reader.ReadFString();
-				for (var i = 0; i < elementCount; i++) // Unknown
-					reader.Position += 32;
+					filesSpan[i].MIMEType = reader.ReadFString();
+			}
+
+			if (dataVersion >= EFileManifestListVersion.HasSHA256)
+			{
+				for (var i = 0; i < elementCount; i++)
+					filesSpan[i].SHA256Hash = reader.Read<FSHA256Hash>();
 			}
 
 			// FileDataList.OnPostLoad();
@@ -139,6 +157,51 @@ public sealed class FFileManifest : IComparable<FFileManifest>, IComparable
 	/// <param name="cacheAsIs">Whether or not to cache the chunks 1:1 as they were downloaded.</param>
 	public FFileManifestStream GetStream(bool cacheAsIs) => new(this, cacheAsIs);
 
+	/// <summary>
+	/// Attempts to find the chunk part that contains the specified file offset.
+	/// </summary>
+	/// <param name="fileOffset">The offset within the file to locate.</param>
+	/// <param name="index">
+	/// When this method returns, contains the index of the chunk part that contains the specified offset, if found; otherwise, -1.
+	/// </param>
+	/// <param name="chunkPartOffset">
+	/// When this method returns, contains the offset within the found chunk part, if found; otherwise, 0.
+	/// </param>
+	/// <returns>
+	/// <see langword="true"/> if thr chunk part was found; otherwise, <see langword="false"/>.
+	/// </returns>
+	public bool TryFindChunkPart(long fileOffset, out int index, out uint chunkPartOffset)
+	{
+		var chunkParts = new ReadOnlySpan<FChunkPart>(ChunkPartsArray);
+
+		var left = 0;
+		var right = chunkParts.Length - 1;
+
+		while (left <= right)
+		{
+			var mid = left + ((right - left) >> 1); // `>> 1` is equal to `/ 2` but "faster"
+			ref readonly var part = ref chunkParts[mid];
+
+			if (fileOffset < part.FileOffset)
+			{
+				right = mid - 1;
+			}
+			else if (fileOffset >= part.FileOffset + part.Size)
+			{
+				left = mid + 1;
+			}
+			else
+			{
+				chunkPartOffset = (uint)(fileOffset - part.FileOffset);
+				index = mid;
+				return true;
+			}
+		}
+
+		index = -1;
+		chunkPartOffset = 0;
+		return false;
+	}
 
 	/// <inheritdoc />
 	public int CompareTo(FFileManifest? other)

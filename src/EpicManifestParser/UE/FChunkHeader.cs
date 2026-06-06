@@ -2,18 +2,19 @@ using System.Runtime.CompilerServices;
 
 namespace EpicManifestParser.UE;
 
-internal struct FChunkHeader
+internal readonly struct FChunkHeader
 {
+	internal const int32 DefaultDataSizeUncompressed = 1024 * 1024;
 	public const uint32 Magic = 0xB1FE3AA2;
 
 	/// <summary>
 	/// The version of this header data.
 	/// </summary>
-	public EChunkVersion Version;
+	public readonly EChunkVersion Version;
 	/// <summary>
 	/// The size of this header.
 	/// </summary>
-	public int32 HeaderSize;
+	public readonly int32 HeaderSize;
 	/*/// <summary>
 	/// The GUID for this data.
 	/// </summary>
@@ -21,15 +22,15 @@ internal struct FChunkHeader
 	/// <summary>
 	/// The size of this data compressed.
 	/// </summary>
-	public int32 DataSizeCompressed;
+	public readonly int32 DataSizeCompressed;
 	/// <summary>
 	/// The size of this data uncompressed.
 	/// </summary>
-	public int32 DataSizeUncompressed;
+	public readonly int32 DataSizeUncompressed;
 	/// <summary>
 	/// How the chunk data is stored.
 	/// </summary>
-	public EChunkStorageFlags StoredAs;
+	public readonly EChunkStorageFlags StoredAs;
 	/*/// <summary>
 	/// What type of hash we are using.
 	/// </summary>
@@ -54,8 +55,7 @@ internal struct FChunkHeader
 	{
 		var startPos = reader.Position;
 		var archiveSizeLeft = reader.Length - startPos;
-		var versionSizesSpan = ChunkHeaderVersionSizes.AsSpan();
-		var expectedSerializedBytes = versionSizesSpan[(int32)EChunkVersion.Original];
+		var expectedSerializedBytes = ChunkHeaderVersionSizes[(int32)EChunkVersion.Original];
 
 		if (archiveSizeLeft >= expectedSerializedBytes)
 		{
@@ -72,11 +72,11 @@ internal struct FChunkHeader
 			reader.Position += FGuid.Size + sizeof(uint64);
 
 			StoredAs = reader.Read<EChunkStorageFlags>();
-			DataSizeUncompressed = 1024 * 1024;
+			DataSizeUncompressed = DefaultDataSizeUncompressed;
 
 			if (Version >= EChunkVersion.StoresShaAndHashType)
 			{
-				expectedSerializedBytes = versionSizesSpan[(int32)EChunkVersion.StoresShaAndHashType];
+				expectedSerializedBytes = ChunkHeaderVersionSizes[(int32)EChunkVersion.StoresShaAndHashType];
 				if (archiveSizeLeft >= expectedSerializedBytes)
 				{
 					//SHAHash = reader.Read<FSHAHash>();
@@ -86,7 +86,7 @@ internal struct FChunkHeader
 
 				if (Version >= EChunkVersion.StoresDataSizeUncompressed)
 				{
-					expectedSerializedBytes = versionSizesSpan[(int32)EChunkVersion.StoresDataSizeUncompressed];
+					expectedSerializedBytes = ChunkHeaderVersionSizes[(int32)EChunkVersion.StoresDataSizeUncompressed];
 					if (archiveSizeLeft >= expectedSerializedBytes)
 					{
 						DataSizeUncompressed = reader.Read<int32>();
@@ -99,7 +99,7 @@ internal struct FChunkHeader
 		reader.Position = startPos + HeaderSize;
 	}
 
-	private static readonly uint32[] ChunkHeaderVersionSizes =
+	private static ReadOnlySpan<uint32> ChunkHeaderVersionSizes =>
 	[
 		// Dummy for indexing.
 		0,

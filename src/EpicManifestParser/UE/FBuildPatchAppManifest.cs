@@ -1,16 +1,20 @@
 ﻿using System.Buffers;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
 using AsyncKeyedLock;
 
+using CommunityToolkit.HighPerformance.Buffers;
+
 using EpicManifestParser.Json;
+
+using OffiUtils;
 
 namespace EpicManifestParser.UE;
 
+// https://github.com/NotOfficer/UnrealEngine/blob/1436d646b9b11ffe9a46b04e9617dba689b56d35/Engine/Source/Runtime/Online/BuildPatchServices/Private/BuildPatchManifest.h?plain=1#L60C1-L63C29
 /// <summary>
 /// UE FBuildPatchAppManifest struct
 /// </summary>
@@ -26,11 +30,17 @@ public class FBuildPatchAppManifest
 	public IReadOnlyList<FCustomField> CustomFields { get; internal set; } = null!;
 	/// <summary/>
 	public IReadOnlyDictionary<FGuid, FChunkInfo> Chunks { get; internal set; } = null!;
-	
+
 	/// <summary/>
 	public int64 TotalBuildSize { get; internal set; }
 	/// <summary/>
 	public int64 TotalDownloadSize { get; internal set; }
+
+	// The encryption secret ID and hash used for this manifest, if encrypted.
+	// These are serialised with the manifest header, not the main data.
+	internal FGuid? EncryptionSecretId { get; set; }
+	internal FAESAuthTag? EncryptionAuthTag { get; set; }
+	internal FEncryptedData? EncryptedData { get; set; }
 
 	internal ManifestParseOptions Options { get; init; } = null!;
 	internal AsyncKeyedLocker<FGuid> ChunksLocker { get; set; } = null!;
@@ -78,17 +88,6 @@ public class FBuildPatchAppManifest
 	}
 
 	/// <summary>
-	/// Get the chunk sub-directory name
-	/// </summary>
-	public string GetChunkSubdir() => Meta.FeatureLevel switch
-	{
-		> EFeatureLevel.StoredAsBinaryData => "ChunksV4",
-		> EFeatureLevel.StoresDataGroupNumbers => "ChunksV3",
-		> EFeatureLevel.StartStoringVersion => "ChunksV2",
-		_ => "Chunks"
-	};
-
-	/// <summary>
 	/// Helper function to decide whether the passed in data is a JSON string we expect to deserialize a manifest from
 	/// </summary>
 	/// <returns><see langword="true"/> if the <paramref name="dataInput"/> is JSON; otherwise, <see langword="false"/>.</returns>
@@ -96,19 +95,7 @@ public class FBuildPatchAppManifest
 	{
 		// The best we can do is look for the mandatory first character open curly brace,
 		// it will be within the first 4 characters (may have BOM)
-		var span = dataInput
-#if !NET9_0_OR_GREATER
-			.Span
-#endif
-			;
-		for (var idx = 0; idx < 4 && idx < span.Length; ++idx)
-		{
-			if (span[idx] == '{')
-			{
-				return true;
-			}
-		}
-		return false;
+		return dataInput[..4].Contains((byte)'{');
 	}
 
 	/// <summary>
@@ -139,9 +126,8 @@ public class FBuildPatchAppManifest
 	/// </summary>
 	/// <param name="dataInput">The span to parse from</param>
 	/// <param name="optionsBuilder">Builder for options/configuration to parse</param>
-	/// <exception cref="NotSupportedException">Manifest is encrypted or older than <see cref="EFeatureLevel.StoredAsBinaryData"/></exception>
-	/// <exception cref="InvalidOperationException">Data is compressed and zlib-ng instance was null</exception>
-	/// <exception cref="FileLoadException">Error while parsing</exception>
+	/// <exception cref="NotSupportedException">Manifest is older than <see cref="EFeatureLevel.StoredAsBinaryData"/></exception>
+	/// <exception cref="FileLoadException">Error while parsing or decompression</exception>
 	/// <exception cref="InvalidDataException">Hashes do not match</exception>
 	public static FBuildPatchAppManifest DeserializeBinary(ManifestRoData dataInput, Action<ManifestParseOptions>? optionsBuilder = null)
 	{
@@ -156,7 +142,30 @@ public class FBuildPatchAppManifest
 	/// <inheritdoc cref="DeserializeBinary(ManifestRoData,ManifestParseOptions)"/>
 	public static FBuildPatchAppManifest Deserialize(ManifestRoData dataInput, ManifestParseOptions options)
 	{
-		return IsJson(dataInput) ? DeserializeJson(dataInput, options) : DeserializeBinary(dataInput, options);
+		return IsJson(dataInput)
+			? DeserializeJson(dataInput, options)
+			: DeserializeBinary(dataInput, options);
+	}
+
+	/// <summary>
+	/// Deserializes a binary or JSON manifest
+	/// </summary>
+	/// <param name="path">The file path to parse from</param>
+	/// <param name="options">Options/Configuration to parse</param>
+	/// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+	/// <inheritdoc cref="DeserializeBinary(ManifestRoData,ManifestParseOptions)"/>
+	public static async ValueTask<FBuildPatchAppManifest> DeserializeFileAsync(
+		string path, ManifestParseOptions? options = null, CancellationToken cancellationToken = default)
+	{
+		using var handle = File.OpenHandle(path);
+		var size = (int)RandomAccess.GetLength(handle);
+		using var dataInputOwner = MemoryOwner<byte>.Allocate(size);
+		var dataInputMemory = dataInputOwner.Memory;
+		await RandomAccess.ReadAsync(handle, dataInputMemory, 0, cancellationToken).ConfigureAwait(false);
+
+		options ??= new ManifestParseOptions();
+		var dataInput = dataInputMemory.Span;
+		return Deserialize(dataInput, options);
 	}
 
 	/// <summary>
@@ -164,13 +173,9 @@ public class FBuildPatchAppManifest
 	/// </summary>
 	/// <param name="dataInput">The span to parse from</param>
 	/// <param name="options">Options/Configuration to parse</param>
-	public static FBuildPatchAppManifest DeserializeJson(ManifestRoData dataInput, ManifestParseOptions options)
+	public static FBuildPatchAppManifest DeserializeJson(ManifestRoData dataInput, ManifestParseOptions? options = null)
 	{
-		var reader = JsonNode.Parse(dataInput
-#if !NET9_0_OR_GREATER
-			.Span
-#endif
-		)!.AsObject();
+		var reader = JsonNode.Parse(dataInput)!.AsObject();
 
 		var featureLevel = reader["ManifestFileVersion"].GetBlob(EFeatureLevel.CustomFields);
 		if (featureLevel == EFeatureLevel.BrokenJsonVersion)
@@ -179,6 +184,7 @@ public class FBuildPatchAppManifest
 		var meta = new FManifestMeta
 		{
 			FeatureLevel = featureLevel,
+			ChunkSubdir = FManifestMeta.GetChunkSubdir(featureLevel),
 			AppID = reader["AppID"].GetBlob<uint32>(),
 			AppName = reader["AppNameString"].GetString(),
 			BuildVersion = reader["BuildVersionString"].GetString(),
@@ -187,8 +193,8 @@ public class FBuildPatchAppManifest
 			PrereqName = reader["PrereqName"].GetString(),
 			PrereqPath = reader["PrereqPath"].GetString(),
 			PrereqArgs = reader["PrereqArgs"].GetString(),
-			UninstallExe = "",
-			UninstallCommand = "",
+			UninstallActionPath = "",
+			UninstallActionArgs = ""
 		};
 
 		var jsonFileManifestList = reader["FileManifestList"]!.AsArray();
@@ -204,7 +210,7 @@ public class FBuildPatchAppManifest
 			var fileManifest = fileManifestsSpan[i] = new FFileManifest
 			{
 				FileName = jsonFileManifest["Filename"].GetString(),
-				FileHash = jsonFileManifest["FileHash"].GetBlob<FSHAHash>(),
+				SHA1Hash = jsonFileManifest["FileHash"].GetBlob<FSHAHash>(),
 				InstallTags = jsonFileManifest["InstallTags"].Parse<string[]>([]),
 				SymlinkTarget = jsonFileManifest["SymlinkTarget"].GetString()
 			};
@@ -218,17 +224,8 @@ public class FBuildPatchAppManifest
 				var chunkPartGuid = jsonFileChunkPart["Guid"].GetFGuid();
 				var chunkPartOffset = jsonFileChunkPart["Offset"].GetBlob<uint32>();
 				var chunkPartSize = jsonFileChunkPart["Size"].GetBlob<uint32>();
-				chunkPartsSpan[j] = new FChunkPart(chunkPartGuid, chunkPartOffset, chunkPartSize, chunkPartsFileOffset);
+				chunkPartsSpan[j] = new FChunkPart(chunkPartGuid, chunkPartOffset, chunkPartSize, chunkPartsFileOffset, mutableChunkInfoLookup);
 				chunkPartsFileOffset += chunkPartSize;
-
-				ref var lookupChunk = ref CollectionsMarshal.GetValueRefOrAddDefault(mutableChunkInfoLookup, chunkPartGuid, out var exists);
-				if (!exists)
-				{
-					lookupChunk = new FChunkInfo
-					{
-						Guid = chunkPartGuid
-					};
-				}
 			}
 
 			if (jsonFileManifest["bIsUnixExecutable"].Get<bool>())
@@ -366,7 +363,7 @@ public class FBuildPatchAppManifest
 			Files = fileManifests,
 			CustomFields = customFields ?? [],
 			Chunks = mutableChunkInfoLookup,
-			Options = options
+			Options = options ?? new ManifestParseOptions()
 		};
 		manifest.PostSetup();
 
@@ -392,97 +389,96 @@ public class FBuildPatchAppManifest
 	/// </summary>
 	/// <param name="dataInput">The span to parse from</param>
 	/// <param name="options">Options/Configuration to parse</param>
-	/// <exception cref="NotSupportedException">Manifest is encrypted or older than <see cref="EFeatureLevel.StoredAsBinaryData"/></exception>
-	/// <exception cref="InvalidOperationException">Data is compressed and zlib-ng instance was null</exception>
-	/// <exception cref="FileLoadException">Error while parsing</exception>
+	/// <exception cref="NotSupportedException">Manifest is older than <see cref="EFeatureLevel.StoredAsBinaryData"/></exception>
+	/// <exception cref="FileLoadException">Error while parsing or decompression</exception>
 	/// <exception cref="InvalidDataException">Hashes do not match</exception>
-	public static FBuildPatchAppManifest DeserializeBinary(ManifestRoData dataInput, ManifestParseOptions options)
+	public static FBuildPatchAppManifest DeserializeBinary(ManifestRoData dataInput, ManifestParseOptions? options = null)
 	{
 		var fileReader = new ManifestReader(dataInput);
-		byte[]? manifestRawDataBuffer = null;
+		var header = new FManifestHeader(ref fileReader);
 
-		try
+		if (header.Version < EFeatureLevel.StoredAsBinaryData)
+			throw new NotSupportedException("Manifests below feature level StoredAsBinaryData are not supported");
+
+		var isCompressed = header.StoredAs.HasFlag(EManifestStorageFlags.Compressed);
+		var isEncrypted = header.StoredAs.HasFlag(EManifestStorageFlags.Encrypted);
+		var storedAsRemaining = header.StoredAs & ~(EManifestStorageFlags.Compressed | EManifestStorageFlags.Encrypted);
+		if (storedAsRemaining != EManifestStorageFlags.None)
+			throw new UnreachableException("Manifest has invalid or unknown storage flags");
+
+		options ??= new ManifestParseOptions();
+
+		var bufferSize = isCompressed
+			? header.DataSizeUncompressed
+			: header.DataSizeCompressed;
+
+		using var buffer = SpanOwner<uint8>.Allocate(bufferSize);
+
+		ManifestData manifestRawData;
+
+		if (isCompressed)
 		{
-			var header = new FManifestHeader(ref fileReader);
+			options.Decompressor ??= DecompressorBuilder.Default.Build();
 
-			if (header.Version < EFeatureLevel.StoredAsBinaryData)
-				throw new NotSupportedException("Manifests below feature level StoredAsBinaryData are not supported");
-			if (header.StoredAs.HasFlag(EManifestStorageFlags.Encrypted))
-				throw new NotSupportedException("Encrypted manifests are not supported");
-			if (header.StoredAs.HasFlag(EManifestStorageFlags.Compressed) && options.Decompressor is null)
-				throw new InvalidOperationException("Data is compressed and decompressor delegate was null");
+			var manifestCompressedData = fileReader.ReadSpan(header.DataSizeCompressed);
+			manifestRawData = buffer.Span;
 
-			ManifestData manifestRawData;
-
-			if (header.StoredAs.HasFlag(EManifestStorageFlags.Compressed))
+			if (!options.Decompressor.TryDecompress(
+					CompressionAlgorithm.Zlib,
+					manifestCompressedData,
+					manifestRawData,
+					out var bytesWritten) ||
+				bytesWritten != header.DataSizeUncompressed)
 			{
-				manifestRawDataBuffer = ArrayPool<byte>.Shared.Rent(header.DataSizeCompressed + header.DataSizeUncompressed);
-				manifestRawData = manifestRawDataBuffer
-#if NET9_0_OR_GREATER
-					.AsSpan
-#else
-					.AsMemory
-#endif
-						(header.DataSizeCompressed, header.DataSizeUncompressed);
-
-				var manifestCompressedData = manifestRawDataBuffer.AsSpan(0, header.DataSizeCompressed);
-				fileReader.Read(manifestCompressedData);
-
-				var result = options.Decompressor!.Invoke(
-					options.DecompressorState,
-					manifestRawDataBuffer, 0, header.DataSizeCompressed,
-					manifestRawDataBuffer, header.DataSizeCompressed, header.DataSizeUncompressed);
-				if (!result)
-					throw new FileLoadException("Failed to uncompress data");
+				throw new FileLoadException("Failed to uncompress data");
 			}
-			else if (header.StoredAs == EManifestStorageFlags.None)
-			{
-				manifestRawDataBuffer = ArrayPool<byte>.Shared.Rent(header.DataSizeCompressed);
-				manifestRawData = manifestRawDataBuffer
-#if NET9_0_OR_GREATER
-					.AsSpan
-#else
-					.AsMemory
-#endif
-						(0, header.DataSizeCompressed);
-				fileReader.Read(manifestRawData
-#if !NET9_0_OR_GREATER
-					.Span
-#endif
-				);
-			}
-			else
-			{
-				throw new UnreachableException("Manifest has invalid or unknown storage flags");
-			}
-
-			var hash = FSHAHash.Compute(manifestRawData
-#if !NET9_0_OR_GREATER
-				.Span
-#endif
-			);
-			if (header.SHAHash != hash)
-				throw new InvalidDataException($"Hash does not match. expected: {header.SHAHash}, actual: {hash}");
-
-			var reader = new ManifestReader(manifestRawData);
-			var chunks = new Dictionary<FGuid, FChunkInfo>();
-			var manifest = new FBuildPatchAppManifest
-			{
-				Chunks = chunks,
-				Options = options
-			};
-			manifest.Meta = new FManifestMeta(ref reader);
-			manifest.ChunkList = FChunkInfo.ReadChunkDataList(ref reader, chunks);
-			manifest.Files = FFileManifest.ReadFileDataList(ref reader, manifest);
-			manifest.CustomFields = FCustomField.ReadCustomFields(ref reader);
-			manifest.PostSetup();
-			return manifest;
 		}
-		finally
+		else
 		{
-			if (manifestRawDataBuffer is not null)
-				ArrayPool<byte>.Shared.Return(manifestRawDataBuffer);
+			manifestRawData = fileReader.ReadSpan(header.DataSizeCompressed);
 		}
+
+		var hash = FSHAHash.Compute(manifestRawData);
+		if (header.SHAHash != hash)
+			throw new InvalidDataException($"Hash does not match. expected: {header.SHAHash}, actual: {hash}");
+
+		var reader = new ManifestReader(manifestRawData);
+		var chunks = new Dictionary<FGuid, FChunkInfo>();
+		var manifest = new FBuildPatchAppManifest
+		{
+			Chunks = chunks,
+			Options = options
+		};
+
+		if (header.EncryptionSecretId.HasValue)
+		{
+			manifest.EncryptionSecretId = header.EncryptionSecretId;
+			manifest.EncryptionAuthTag = header.EncryptionAuthTag;
+		}
+
+		manifest.Meta = new FManifestMeta(ref reader);
+		manifest.ChunkList = FChunkInfo.ReadChunkDataList(ref reader, chunks);
+		manifest.Files = FFileManifest.ReadFileDataList(ref reader, manifest);
+		manifest.CustomFields = FCustomField.ReadCustomFields(ref reader);
+
+		if (header.Version >= EFeatureLevel.ManifestEncryptionSupport)
+		{
+			if (header.EncryptionSecretId.HasValue && header.EncryptionSecretId.Value.IsValid())
+			{
+				manifest.EncryptedData = FEncryptedData.ReadEncryptedData(ref reader);
+				// TODO: read "header"
+			}
+		}
+
+		manifest.PostSetup();
+
+		return manifest;
+	}
+
+	// TODO
+	private void DecryptData()
+	{
+
 	}
 
 	private void PostSetup()
@@ -506,7 +502,7 @@ public class FBuildPatchAppManifest
 				lockerOptions.PoolInitialFill = 64;
 			});
 
-			Options.CreateDefaultClient();
+			Options.Client ??= ManifestParseOptions.CreateDefaultClient();
 		}
 	}
 }

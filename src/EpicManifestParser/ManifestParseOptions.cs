@@ -1,6 +1,7 @@
 ﻿using System.Net;
 
 using EpicManifestParser.Api;
+using OffiUtils;
 
 namespace EpicManifestParser;
 // ReSharper disable UseSymbolAlias
@@ -11,19 +12,9 @@ namespace EpicManifestParser;
 public class ManifestParseOptions
 {
 	/// <summary>
-	/// Zlib decompress delegate.
+	/// Used to decompress zlib data in chunks and binary serialized manifests.
 	/// </summary>
-	public delegate bool DecompressDelegate(object? state, byte[] source, int sourceOffset, int sourceLength, byte[] destination, int destinationOffset, int destinationLength);
-
-	/// <summary>
-	/// Zlib decompress delegate, defaults to <see cref="ManifestZlibStreamDecompressor.Decompress"/>.
-	/// </summary>
-	public DecompressDelegate? Decompressor { get; set; } = ManifestZlibStreamDecompressor.Decompress;
-
-	/// <summary>
-	/// Optional state that gets passed to the <see cref="Decompressor"/> delegate.
-	/// </summary>
-	public object? DecompressorState { get; set; }
+	public IDecompressor? Decompressor { get; set; }
 
 	/// <summary>
 	/// Required for downloading, must have a leading slash!
@@ -55,35 +46,35 @@ public class ManifestParseOptions
 	public bool CacheChunksAsIs { get; set; }
 
 	/// <summary>
-	/// Optional for caching manifests when using <see cref="ManifestInfo.DownloadAndParseAsync(ManifestParseOptions, Predicate&lt;ManifestInfoElement&gt;?, Predicate&lt;ManifestInfoElementManifest&gt;?, CancellationToken)"/>.
+	/// Optional for caching manifests when using <see cref="ManifestInfo.DownloadAndParseAsync(ManifestParseOptions, Predicate&lt;ManifestInfoElement&gt;?, Predicate&lt;ManifestInfoElementDownload&gt;?, CancellationToken)"/>.
 	/// </summary>
 	public string? ManifestCacheDirectory { get; set; }
 
 	/// <summary>
-	/// Creates a default <see cref="HttpClient"/> and also sets <see cref="Client"/> to its instance.
+	/// Creates a default <see cref="HttpClient"/> instance optimized for chunk downloading.
 	/// </summary>
-	/// <returns>The created <see cref="HttpClient"/>.</returns>
-	public HttpClient CreateDefaultClient()
+	/// <returns>The created <see cref="HttpClient"/> instance.</returns>
+	public static HttpClient CreateDefaultClient()
 	{
-		if (Client is not null)
-			return Client;
-
 		var handler = new SocketsHttpHandler
 		{
 			UseCookies = false,
 			UseProxy = false,
-			AutomaticDecompression = DecompressionMethods.Deflate | DecompressionMethods.GZip,
-			MaxConnectionsPerServer = 256
+			AutomaticDecompression = DecompressionMethods.None,
+			MaxConnectionsPerServer = 256,
+			EnableMultipleHttp3Connections = true,
+			EnableMultipleHttp2Connections = true,
+			PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+			PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2)
 		};
-		Client = new HttpClient(handler)
+		var client = new HttpClient(handler)
 		{
-			DefaultRequestVersion = new Version(1, 1),
-			DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact,
-			Timeout = TimeSpan.FromSeconds(30)
+			DefaultRequestVersion = HttpVersion.Version30,
+			DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
+			Timeout = TimeSpan.FromSeconds(50)
 		};
-		Client.DefaultRequestHeaders.Accept.ParseAdd("*/*");
-		Client.DefaultRequestHeaders.UserAgent.ParseAdd("EpicGamesLauncher/16.13.0-36938137+++Portal+Release-Live Windows/10.0.26100.1.256.64bit");
-		Client.DefaultRequestHeaders.ConnectionClose = false;
-		return Client;
+		client.DefaultRequestHeaders.Accept.ParseAdd("*/*");
+		client.DefaultRequestHeaders.UserAgent.ParseAdd("EpicOnlineServicesInstallHelper/5.3.0-54393070+++UE5+Dev-Distro-5.5-5e3057 (http-eventloop) Windows/10.0.26200.1.256.64bit");
+		return client;
 	}
 }

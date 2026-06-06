@@ -138,7 +138,7 @@ public readonly struct FGuid : IEquatable<FGuid>, ISpanFormattable, IUtf8SpanFor
 	{
 		return left.Equals(right);
 	}
-	
+
 	/// <inheritdoc cref="Equals(FGuid)"/>
 	public static bool operator !=(FGuid left, FGuid right)
 	{
@@ -156,15 +156,15 @@ public readonly struct FGuid : IEquatable<FGuid>, ISpanFormattable, IUtf8SpanFor
 	}
 	
 	/// <inheritdoc />
-	public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format, IFormatProvider? provider)
+	public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format, IFormatProvider? provider = null)
 	{
 		return destination.TryWrite(provider, $"{A:X8}{B:X8}{C:X8}{D:X8}", out charsWritten);
 	}
 	
 	/// <inheritdoc />
-	public bool TryFormat(Span<byte> destination, out int bytesWritten, ReadOnlySpan<char> format, IFormatProvider? provider)
+	public bool TryFormat(Span<byte> utf8Destination, out int bytesWritten, ReadOnlySpan<char> format, IFormatProvider? provider = null)
 	{
-		return Utf8.TryWrite(destination, provider, $"{A:X8}{B:X8}{C:X8}{D:X8}", out bytesWritten);
+		return Utf8.TryWrite(utf8Destination, provider, $"{A:X8}{B:X8}{C:X8}{D:X8}", out bytesWritten);
 	}
 }
 
@@ -183,9 +183,9 @@ public sealed class FGuidConverter : JsonConverter<FGuid>
 	/// <inheritdoc/>
 	public override void Write(Utf8JsonWriter writer, FGuid value, JsonSerializerOptions options)
 	{
-		Span<byte> guidUtf8 = stackalloc byte[FGuid.Size * 2];
+		Span<byte> guidUtf8 = stackalloc byte[FGuid.Size * 2]; // 2 chars per byte
 
-		if (value.TryFormat(guidUtf8, out _, default, null))
+		if (value.TryFormat(guidUtf8, out _, default))
 		{
 			writer.WriteStringValue(guidUtf8);
 			return;

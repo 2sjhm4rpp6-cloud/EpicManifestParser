@@ -1,7 +1,8 @@
-﻿using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+
 using CommunityToolkit.HighPerformance.Buffers;
 
 namespace EpicManifestParser.UE;
@@ -9,29 +10,29 @@ namespace EpicManifestParser.UE;
 // ReSharper disable UseSymbolAlias
 
 /// <summary>
-/// UE FSHAHash struct
+/// UE FMD5Hash struct
 /// </summary>
-[InlineArray(20)]
-public struct FSHAHash : IFHash<FSHAHash>, IEquatable<FSHAHash>, ISpanFormattable, IUtf8SpanFormattable
+[InlineArray(16)]
+public struct FMD5Hash : IFHash<FMD5Hash>, IEquatable<FMD5Hash>, ISpanFormattable, IUtf8SpanFormattable
 {
 	private byte _element;
 
 	/// <summary>
 	/// The size of the hash/struct.
 	/// </summary>
-	public static int Size => 20;
+	public static int Size => 16;
 
 	/// <inheritdoc/>
 	[UnscopedRef]
 	public Span<byte> GetSpan() => this;
 
 	/// <inheritdoc/>
-	public bool Equals(FSHAHash other)
+	public bool Equals(FMD5Hash other)
 		=> ((ReadOnlySpan<byte>)this).SequenceEqual(other);
 
 	/// <inheritdoc/>
 	public override bool Equals(object? obj)
-		=> obj is FSHAHash other && Equals(other);
+		=> obj is FMD5Hash other && Equals(other);
 
 	/// <inheritdoc/>
 	public override int GetHashCode()
@@ -42,35 +43,35 @@ public struct FSHAHash : IFHash<FSHAHash>, IEquatable<FSHAHash>, ISpanFormattabl
 	}
 
 	/// <inheritdoc/>
-	public static bool operator ==(FSHAHash left, FSHAHash right)
+	public static bool operator ==(FMD5Hash left, FMD5Hash right)
 		=> left.Equals(right);
 
 	/// <inheritdoc/>
-	public static bool operator !=(FSHAHash left, FSHAHash right)
+	public static bool operator !=(FMD5Hash left, FMD5Hash right)
 		=> !left.Equals(right);
 
 	/// <inheritdoc/>
-	public static FSHAHash Compute(ReadOnlySpan<byte> data)
+	public static FMD5Hash Compute(ReadOnlySpan<byte> data)
 	{
-		FSHAHash result = default;
-		SHA1.TryHashData(data, result, out _);
+		FMD5Hash result = default;
+		MD5.TryHashData(data, result, out _);
 		return result;
 	}
 
 	/// <inheritdoc/>
-	public static FSHAHash Compute(ReadOnlySpan<char> text)
+	public static FMD5Hash Compute(ReadOnlySpan<char> text)
 		=> Compute(MemoryMarshal.AsBytes(text));
 
 	/// <inheritdoc/>
-	public static async Task<FSHAHash> ComputeAsync(Stream stream, CancellationToken cancellationToken = default)
+	public static async Task<FMD5Hash> ComputeAsync(Stream stream, CancellationToken cancellationToken = default)
 	{
 		using var memoryOwner = MemoryOwner<byte>.Allocate(Size);
-		await SHA1.HashDataAsync(stream, memoryOwner.Memory, cancellationToken).ConfigureAwait(false);
-		return MemoryMarshal.Read<FSHAHash>(memoryOwner.Span);
+		await MD5.HashDataAsync(stream, memoryOwner.Memory, cancellationToken).ConfigureAwait(false);
+		return MemoryMarshal.Read<FMD5Hash>(memoryOwner.Span);
 	}
 
 	/// <inheritdoc/>
-	public static Task<FSHAHash> ComputeAsync(string filePath, CancellationToken cancellationToken = default)
+	public static Task<FMD5Hash> ComputeAsync(string filePath, CancellationToken cancellationToken = default)
 	{
 		using var stream = File.OpenRead(filePath);
 		return ComputeAsync(stream, cancellationToken);

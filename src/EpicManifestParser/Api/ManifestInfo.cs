@@ -104,28 +104,28 @@ public class ManifestInfo
 		return JsonSerializer.DeserializeAsync(fs, EpicManifestParserJsonContext.Default.ManifestInfo, cancellationToken);
 	}
 
-	/// <param name="elementPredicate">Predicate to select the a single element in <see cref="Elements"/></param>
-	/// <param name="elementManifestPredicate">Predicate to select the a single manifest in <see cref="ManifestInfoElement.Manifests"/></param>
+	/// <param name="elementPredicate">Predicate to select a specific element in <see cref="Elements"/></param>
+	/// <param name="elementDownloadPredicate">Predicate to select a specific download in <see cref="ManifestInfoElement.Manifests"/></param>
 	/// <param name="cancellationToken">
 	/// The <see cref="CancellationToken"/> that can be used to cancel the read operation.
 	/// </param>
 	/// <param name="optionsBuilder">Builder for options for parsing and/or caching the manifest</param>
-	/// <inheritdoc cref="DownloadAndParseAsync(ManifestParseOptions, Predicate&lt;ManifestInfoElement&gt;?, Predicate&lt;ManifestInfoElementManifest&gt;?, CancellationToken)"/>
+	/// <inheritdoc cref="DownloadAndParseAsync(ManifestParseOptions, Predicate&lt;ManifestInfoElement&gt;?, Predicate&lt;ManifestInfoElementDownload&gt;?, CancellationToken)"/>
 	public Task<(FBuildPatchAppManifest Manifest, ManifestInfoElement InfoElement)> DownloadAndParseAsync(
-		Predicate<ManifestInfoElement>? elementPredicate = null, Predicate<ManifestInfoElementManifest>? elementManifestPredicate = null,
+		Predicate<ManifestInfoElement>? elementPredicate = null, Predicate<ManifestInfoElementDownload>? elementDownloadPredicate = null,
 		CancellationToken cancellationToken = default, Action<ManifestParseOptions>? optionsBuilder = null)
 	{
 		var options = new ManifestParseOptions();
 		optionsBuilder?.Invoke(options);
-		return DownloadAndParseAsync(options, elementPredicate, elementManifestPredicate, cancellationToken);
+		return DownloadAndParseAsync(options, elementPredicate, elementDownloadPredicate, cancellationToken);
 	}
 
 	/// <summary>
 	/// Downloads and parses the manifest.
 	/// </summary>
 	/// <param name="options">Options for parsing and/or caching the manifest</param>
-	/// <param name="elementPredicate">Predicate to select the a single element in <see cref="Elements"/></param>
-	/// <param name="elementManifestPredicate">Predicate to select the a single manifest in <see cref="ManifestInfoElement.Manifests"/></param>
+	/// <param name="elementPredicate">Predicate to select a specific element in <see cref="Elements"/></param>
+	/// <param name="elementDownloadPredicate">Predicate to select a specific download in <see cref="ManifestInfoElement.Manifests"/></param>
 	/// <param name="cancellationToken">
 	/// The <see cref="CancellationToken"/> that can be used to cancel the read operation.
 	/// </param>
@@ -136,7 +136,7 @@ public class ManifestInfo
 	/// <exception cref="HttpRequestException">When the manifest data fails to download.</exception>
 	public async Task<(FBuildPatchAppManifest Manifest, ManifestInfoElement InfoElement)> DownloadAndParseAsync(
 		ManifestParseOptions options, Predicate<ManifestInfoElement>? elementPredicate = null,
-		Predicate<ManifestInfoElementManifest>? elementManifestPredicate = null, CancellationToken cancellationToken = default)
+		Predicate<ManifestInfoElementDownload>? elementDownloadPredicate = null, CancellationToken cancellationToken = default)
 	{
 		ManifestInfoElement element;
 		if (elementPredicate is null)
@@ -144,17 +144,17 @@ public class ManifestInfo
 		else
 			element = Elements.Find(elementPredicate) ?? throw new InvalidOperationException("Could not find ManifestInfoElement based on predicate");
 
-		ManifestInfoElementManifest elementManifest;
-		if (elementManifestPredicate is null)
-			elementManifest = element.Manifests[0];
+		ManifestInfoElementDownload elementDownload;
+		if (elementDownloadPredicate is null)
+			elementDownload = element.Manifests[0];
 		else
-			elementManifest = element.Manifests.Find(elementManifestPredicate) ?? throw new InvalidOperationException("Could not find ManifestInfoElement based on predicate");
+			elementDownload = element.Manifests.Find(elementDownloadPredicate) ?? throw new InvalidOperationException("Could not find ManifestInfoElement based on predicate");
 
 		string? cachePath = null;
 
 		if (options.ManifestCacheDirectory is not null)
 		{
-			cachePath = Path.Join(options.ManifestCacheDirectory.AsSpan(), GetFileName(elementManifest.Uri));
+			cachePath = Path.Join(options.ManifestCacheDirectory.AsSpan(), GetFileName(elementDownload.Uri));
 			if (File.Exists(cachePath))
 			{
 				var manifestBuffer = await File.ReadAllBytesAsync(cachePath, cancellationToken).ConfigureAwait(false);
@@ -172,10 +172,10 @@ public class ManifestInfo
 		{
 			Uri manifestUri;
 
-			if (elementManifest.QueryParams is { Count: not 0 })
+			if (elementDownload.QueryParams is { Count: not 0 })
 			{
-				var url = new Url(elementManifest.Uri);
-				foreach (var queryParam in elementManifest.QueryParams)
+				var url = new Url(elementDownload.Uri);
+				foreach (var queryParam in elementDownload.QueryParams)
 				{
 					url.AppendQueryParam(queryParam.Name, queryParam.Value, true, NullValueHandling.NameOnly);
 				}
@@ -183,10 +183,10 @@ public class ManifestInfo
 			}
 			else
 			{
-				manifestUri = elementManifest.Uri;
+				manifestUri = elementDownload.Uri;
 			}
 
-			options.CreateDefaultClient();
+			options.Client ??= ManifestParseOptions.CreateDefaultClient();
 			byte[] manifestBuffer;
 
 			try
@@ -196,7 +196,7 @@ public class ManifestInfo
 			catch (HttpRequestException httpEx)
 			{
 				httpEx.Data.Add("ManifestUri", manifestUri);
-				httpEx.Data.Add("ElementManifest", elementManifest);
+				httpEx.Data.Add("ElementManifest", elementDownload);
 				httpEx.Data.Add("Element", element);
 				throw;
 			}
@@ -229,7 +229,11 @@ public class ManifestInfoElement
 	/// <summary/>
 	public Dictionary<string, object>? Metadata { get; set; }
 	/// <summary/>
-	public required List<ManifestInfoElementManifest> Manifests { get; set; }
+	public required List<ManifestInfoElementDownload> Manifests { get; set; }
+	/// <summary/>
+	public List<ManifestInfoElementDownload>? SelectiveDownload { get; set; }
+	/// <summary/>
+	public bool IsPreloaded { get; set; }
 
 	/// <inheritdoc cref="ManifestExtensions.TryParseVersionAndCL"/>
 	public bool TryParseVersionAndCL([NotNullWhen(true)] out Version? version, out int cl) =>
@@ -237,16 +241,16 @@ public class ManifestInfoElement
 }
 
 /// <summary/>
-public class ManifestInfoElementManifest
+public class ManifestInfoElementDownload
 {
 	/// <summary/>
 	public required Uri Uri { get; set; }
 	/// <summary/>
-	public List<ManifestInfoElementManifestQueryParams>? QueryParams { get; set; }
+	public List<ManifestInfoElementDownloadQueryParams>? QueryParams { get; set; }
 }
 
 /// <summary/>
-public class ManifestInfoElementManifestQueryParams
+public class ManifestInfoElementDownloadQueryParams
 {
 	/// <summary/>
 	public required string Name { get; set; }
@@ -256,9 +260,9 @@ public class ManifestInfoElementManifestQueryParams
 
 
 /// <summary>
-/// Source generated JSON parsers for <see cref="Api.ManifestInfo"/>
+/// Source generated JSON parsers for <see cref="ManifestInfo"/>
 /// </summary>
-[JsonSourceGenerationOptions(JsonSerializerDefaults.Web, Converters = [ typeof(FSHAHashConverter) ])]
+[JsonSourceGenerationOptions(JsonSerializerDefaults.Web, Converters = [ typeof(FHashConverter<FSHAHash>) ])]
 [JsonSerializable(typeof(ManifestInfo))]
 public partial class EpicManifestParserJsonContext : JsonSerializerContext;
 

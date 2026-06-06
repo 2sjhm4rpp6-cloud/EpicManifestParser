@@ -1,5 +1,6 @@
 ﻿namespace EpicManifestParser.UE;
 
+// https://github.com/NotOfficer/UnrealEngine/blob/1436d646b9b11ffe9a46b04e9617dba689b56d35/Engine/Source/Runtime/Online/BuildPatchServices/Private/Data/ManifestData.h?plain=1#L91C15-L91C15
 /// <summary>
 /// UE FManifestMeta struct
 /// </summary>
@@ -27,43 +28,56 @@ public sealed class FManifestMeta
 	public string BuildVersion { get; internal set; } = "";
 	/// <summary>
 	/// The file in this manifest designated the application executable of the build.
+	/// Can be an obfuscated string for encrypted manifests.
 	/// </summary>
 	public string LaunchExe { get; internal set; } = "";
 	/// <summary>
 	/// The command line required when launching the application executable.
+	/// Can be an obfuscated string for encrypted manifests.
 	/// </summary>
 	public string LaunchCommand { get; internal set; } = "";
 	/// <summary>
 	/// The set of prerequisite ids for dependencies that this build's prerequisite installer will apply.
+	/// Can be an obfuscated strings for encrypted manifests.
 	/// </summary>
 	public string[] PrereqIds { get; internal set; } = [];
 	/// <summary>
 	/// A display string for the prerequisite provided at generation.
+	/// Can be an obfuscated string for encrypted manifests.
 	/// </summary>
 	public string PrereqName { get; internal set; } = "";
 	/// <summary>
 	/// The file in this manifest designated the launch executable of the prerequisite installer.
+	/// Can be an obfuscated string for encrypted manifests.
 	/// </summary>
 	public string PrereqPath { get; internal set; } = "";
 	/// <summary>
 	/// The command line required when launching the prerequisite installer.
+	/// Can be an obfuscated string for encrypted manifests.
 	/// </summary>
 	public string PrereqArgs { get; internal set; } = "";
+	/// <summary>
+	/// The path to the uninstall custom action executable.
+	/// Can be an obfuscated string for encrypted manifests.
+	/// </summary>
+	public string UninstallActionPath { get; internal set; } = "";
+	/// <summary>
+	/// The arguments to the uninstall custom action executable.
+	/// Can be an obfuscated string for encrypted manifests.
+	/// </summary>
+	public string UninstallActionArgs { get; internal set; } = "";
 	/// <summary>
 	/// A unique build id generated at original chunking time to identify an exact build.
 	/// </summary>
 	public string BuildId { get; internal set; } = "";
 
 	/// <summary>
-	/// Undocumented
+	/// The chunk sub-directory name.
 	/// </summary>
-	public string UninstallExe { get; internal set; } = "";
-	/// <summary>
-	/// Undocumented
-	/// </summary>
-	public string UninstallCommand { get; internal set; } = "";
+	public string ChunkSubdir { get; internal set; } = "";
 
 	internal FManifestMeta() { }
+	// https://github.com/NotOfficer/UnrealEngine/blob/1436d646b9b11ffe9a46b04e9617dba689b56d35/Engine/Source/Runtime/Online/BuildPatchServices/Private/Data/ManifestData.cpp?plain=1#L494C57-L494C57
 	internal FManifestMeta(ref ManifestReader reader)
 	{
 		var startPos = reader.Position;
@@ -73,6 +87,8 @@ public sealed class FManifestMeta
 		if (dataVersion >= EManifestMetaVersion.Original)
 		{
 			FeatureLevel = reader.Read<EFeatureLevel>();
+			ChunkSubdir = GetChunkSubdir(FeatureLevel);
+
 			bIsFileData = reader.Read<uint8>() == 1;
 			AppID = reader.Read<uint32>();
 			AppName = reader.ReadFString();
@@ -89,11 +105,10 @@ public sealed class FManifestMeta
 			? reader.ReadFString()
 			: GetBackwardsCompatibleBuildId(this);
 
-		// not to be found in UE, maybe fn specific?
-		if (FeatureLevel > EFeatureLevel.UsesBuildTimeGeneratedBuildId)
+		if (dataVersion >= EManifestMetaVersion.SerialisesUnistallActions)
 		{
-			UninstallExe = reader.ReadFString();
-			UninstallCommand = reader.ReadFString();
+			UninstallActionPath = reader.ReadFString();
+			UninstallActionArgs = reader.ReadFString();
 		}
 
 		reader.Position = startPos + dataSize;
@@ -101,7 +116,16 @@ public sealed class FManifestMeta
 
 	internal static string GetBackwardsCompatibleBuildId(in FManifestMeta meta)
 	{
-		// TODO: https://github.com/EpicGames/UnrealEngine/blob/a937fa584fbd6d69b7cf9c527907040c9dbf54fc/Engine/Source/Runtime/Online/BuildPatchServices/Private/BuildPatchUtil.cpp#L166
+		// TODO: https://github.com/NotOfficer/UnrealEngine/blob/1436d646b9b11ffe9a46b04e9617dba689b56d35/Engine/Source/Runtime/Online/BuildPatchServices/Private/BuildPatchUtil.cpp?plain=1#L196C36-L196C36
 		return "";
 	}
+
+	internal static string GetChunkSubdir(EFeatureLevel featureLevel) => featureLevel switch
+	{
+		< EFeatureLevel.DataFileRenames => "Chunks",
+		< EFeatureLevel.ChunkCompressionSupport => "ChunksV2",
+		< EFeatureLevel.VariableSizeChunksWithoutWindowSizeChunkInfo => "ChunksV3",
+		< EFeatureLevel.ChunkEncryptionSupport => "ChunksV4",
+		_ => "ChunksV5"
+	};
 }
